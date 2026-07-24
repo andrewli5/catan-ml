@@ -1,0 +1,8 @@
+numpy>=1.24
+pandas>=2.0
+pyarrow>=14.0
+scikit-learn>=1.3
+matplotlib>=3.7
+# GBT model uses sklearn's HistGradientBoostingClassifier (no OpenMP/libomp
+# system dependency). LightGBM was dropped to avoid a macOS libomp install.
+

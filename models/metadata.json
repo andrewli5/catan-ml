@@ -1,0 +1,67 @@
+{
+  "n_games": 2686,
+  "n_train_games": 2148,
+  "n_test_games": 538,
+  "n_train_rows": 597272,
+  "n_test_rows": 152014,
+  "test_base_rate_win": 0.327917165524228,
+  "features": [
+    "turn_number",
+    "n_players",
+    "vp_public",
+    "vp_total",
+    "n_settlements",
+    "n_cities",
+    "n_roads",
+    "longest_road_len",
+    "has_longest_road",
+    "has_largest_army",
+    "knights_played",
+    "dev_vp",
+    "dev_knight",
+    "res_wood",
+    "res_brick",
+    "res_sheep",
+    "res_wheat",
+    "res_ore",
+    "total_resources",
+    "pips_wood",
+    "pips_brick",
+    "pips_sheep",
+    "pips_wheat",
+    "pips_ore",
+    "pips_total",
+    "distinct_resources_produced",
+    "n_ports",
+    "has_generic_port",
+    "n_2to1_ports",
+    "robber_blocks_me",
+    "vp_total_minus_max_opp",
+    "vp_rank",
+    "pips_total_minus_max_opp",
+    "vp_share"
+  ],
+  "metrics": [
+    {
+      "model": "base_rate",
+      "log_loss": 0.6327147474252531,
+      "accuracy": null,
+      "roc_auc": null,
+      "brier": null
+    },
+    {
+      "model": "logreg",
+      "log_loss": 0.41388426636531844,
+      "accuracy": 0.8062415303853593,
+      "roc_auc": 0.8717124208485482,
+      "brier": 0.1342521494362327
+    },
+    {
+      "model": "gbt",
+      "log_loss": 0.39553754297833355,
+      "accuracy": 0.8157340771244754,
+      "roc_auc": 0.8860086890916588,
+      "brier": 0.12798096886304872
+    }
+  ]
+}
