@@ -1,12 +1,11 @@
 """Static board topology + per-game board layout for standard Catan.
 
-Topology (19 hexes, 54 vertices, 72 edges) is generated geometrically once and
-cached as a module-level singleton. A ``Board`` instance holds the randomized
-per-game layout (resources, number tokens, robber, ports).
+Topology (19 hexes, 54 vertices, 72 edges) is generated from exact integer
+axial coordinates and cached as a module-level singleton. A ``Board`` instance
+holds the randomized per-game layout (resources, number tokens, robber, ports).
 """
 from __future__ import annotations
 
-import math
 import random
 from dataclasses import dataclass, field
 
@@ -24,20 +23,19 @@ PIPS = {2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 8: 5, 9: 4, 10: 3, 11: 2, 12: 1}
 
 # Rows of the standard hex board (pointy-top), counts per row.
 _ROW_SIZES = [3, 4, 5, 4, 3]
-_SQRT3 = math.sqrt(3.0)
 
-
-def _round_pt(x: float, y: float) -> tuple:
-    return (round(x, 3), round(y, 3))
+# Pointy-top corner offsets in integer axial coordinates (scale factor 3).
+_VERTEX_SCALE = 3
+_CORNER_OFFSETS = [(1, 1), (-1, 2), (-2, 1), (-1, -1), (1, -2), (2, -1)]
 
 
 @dataclass
 class BoardTopology:
     """Immutable board graph shared across all games."""
 
-    hex_centers: list          # (x, y) per hex
+    hex_centers: list          # (q, r) per hex
     hex_vertices: list         # list[list[int]] : 6 vertex ids per hex
-    vertex_coords: list        # (x, y) per vertex
+    vertex_coords: list        # (q, r) per vertex
     vertex_hexes: list         # list[list[int]] : hex ids touching each vertex
     vertex_neighbors: list     # list[list[int]] : adjacent vertex ids
     vertex_edges: list         # list[list[int]] : edge ids touching each vertex
@@ -59,24 +57,22 @@ class BoardTopology:
 
 
 def _build_topology() -> BoardTopology:
-    # 1. hex centers
+    # 1. hex centers in integer axial coords (r index shifted so rows are -2..2)
     hex_centers = []
-    for r, n in enumerate(_ROW_SIZES):
-        y = r * 1.5
+    for r_idx, n in enumerate(_ROW_SIZES):
+        r = r_idx - 2
+        q0 = max(-2, -r - 2)
         for i in range(n):
-            x = (i - (n - 1) / 2.0) * _SQRT3
-            hex_centers.append((x, y))
+            hex_centers.append((q0 + i, r))
 
-    # 2. corners per hex (pointy-top: angles 30,90,...,330 deg)
-    corner_angles = [math.radians(a) for a in (30, 90, 150, 210, 270, 330)]
-    vert_index = {}          # rounded point -> vertex id
+    # 2. vertices per hex; each corner is an integer (q, r) key.
+    vert_index = {}          # integer point -> vertex id
     vertex_coords = []
     hex_vertices = []
-    for (cx, cy) in hex_centers:
+    for q, r in hex_centers:
         vids = []
-        for ang in corner_angles:
-            px, py = cx + math.cos(ang), cy + math.sin(ang)
-            key = _round_pt(px, py)
+        for dq, dr in _CORNER_OFFSETS:
+            key = (_VERTEX_SCALE * q + dq, _VERTEX_SCALE * r + dr)
             if key not in vert_index:
                 vert_index[key] = len(vertex_coords)
                 vertex_coords.append(key)
@@ -139,6 +135,9 @@ assert TOPO.n_edges == 72, TOPO.n_edges
 PORT_GENERIC = "3:1"
 PORT_KINDS = [PORT_GENERIC] * 4 + [f"2:1_{r}" for r in RESOURCES]  # 9 ports
 
+# Fixed harbour edges around the standard board (clockwise, no two share a vertex).
+PORT_EDGES = [19, 33, 50, 62, 70, 59, 48, 29, 13]
+
 
 @dataclass
 class Board:
@@ -171,16 +170,24 @@ class Board:
             else:
                 hex_number.append(numbers[ni])
                 ni += 1
-        # ports: assign kinds to distinct coastal edges; both endpoints get it
+        # ports: official 9 fixed harbour edges; kinds shuffled per game.
         kinds = list(PORT_KINDS)
         rng.shuffle(kinds)
-        chosen = rng.sample(TOPO.perimeter_edges, len(kinds))
         vertex_port = {}
-        for eid, kind in zip(chosen, kinds):
+        for eid, kind in zip(PORT_EDGES, kinds):
             a, b = TOPO.edges[eid]
             vertex_port[a] = kind
             vertex_port[b] = kind
         return cls(hex_resource, hex_number, robber_hex, vertex_port)
+
+    def clone(self) -> "Board":
+        """Shallow copy of all mutable per-game layout fields."""
+        return Board(
+            hex_resource=list(self.hex_resource),
+            hex_number=list(self.hex_number),
+            robber_hex=self.robber_hex,
+            vertex_port=dict(self.vertex_port),
+        )
 
     def vertex_pips(self, vid: int) -> int:
         """Total production pips for a vertex (sum over adjacent hexes)."""

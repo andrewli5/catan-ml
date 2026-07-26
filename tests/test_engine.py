@@ -1,16 +1,21 @@
 """Engine smoke + legality invariants.
 
-Run: python -m tests.test_engine   (or pytest tests/test_engine.py)
+Run: pytest
 Confirms 50 games complete with no crashes and no illegal board states.
 """
 from __future__ import annotations
 
+import pickle
 import random
+import subprocess
+import sys
 import time
 
-from catan_ml.engine.board import TOPO
-from catan_ml.engine.state import CITY, EMPTY, SETTLEMENT
+from catan_ml.engine import invariant
 from catan_ml.engine import rules as R
+from catan_ml.engine.actions import Action, apply_action, legal_actions
+from catan_ml.engine.board import TOPO
+from catan_ml.engine.state import CITY, EMPTY, SETTLEMENT, GameState
 from catan_ml.sim.simulate import run_game
 
 
@@ -40,6 +45,77 @@ def assert_board_legal(state) -> None:
         assert p.cities <= R.MAX_CITIES
 
 
+def assert_conservation(state) -> None:
+    invariant.check(state)
+
+
+def _both_hooks(state) -> None:
+    assert_board_legal(state)
+    assert_conservation(state)
+
+
+def test_clone_independence():
+    state = GameState.new_game(4, random.Random(123))
+    state.trade_offer = {
+        "offerer": 0,
+        "responder": 1,
+        "give": {"wood": 1, "brick": 0, "sheep": 2, "wheat": 0, "ore": 0},
+        "want": {"wood": 0, "brick": 1, "sheep": 0, "wheat": 0, "ore": 0},
+    }
+    clone = state.clone()
+    original = state.to_row()
+    assert clone.to_row() == original
+
+    # mutate every mutable field of the clone
+    clone.board.hex_resource[0] = "changed"
+    clone.board.hex_number[0] = 99
+    clone.board.robber_hex = 5
+    clone.board.vertex_port[0] = "2:1_wood"
+    clone.players[0].resources["wood"] = 999
+    clone.players[0].settlements += 1
+    clone.vertex_owner[0] = 3
+    clone.vertex_type[0] = SETTLEMENT
+    clone.edge_owner[0] = 3
+    clone.dev_deck.append("extra")
+    clone.rng_dice.randint(1, 6)
+    clone.trade_offer["give"]["wood"] = 999
+
+    assert state.to_row() == original, "mutating clone changed original"
+    assert clone.to_row() != original
+    assert state.trade_offer["give"]["wood"] == 1, "mutating clone trade_offer changed original"
+
+    # mutate original, clone must stay as it was after the first mutation set
+    clone_snapshot = clone.to_row()
+    state.board.hex_resource[1] = "changed"
+    state.board.hex_number[1] = 99
+    state.board.robber_hex = 7
+    state.board.vertex_port[1] = "3:1"
+    state.players[1].resources["brick"] = 111
+    state.players[1].cities += 1
+    state.vertex_owner[1] = 2
+    state.vertex_type[1] = CITY
+    state.edge_owner[1] = 2
+    state.dev_deck.append("other")
+    state.rng_dice.randint(1, 6)
+    state.trade_offer["want"]["brick"] = 999
+
+    assert clone.to_row() == clone_snapshot, "mutating original changed clone"
+    assert clone.trade_offer["want"]["brick"] == 1, "mutating original trade_offer changed clone"
+
+
+def test_topology_determinism():
+    # ids and structure must be identical in a fresh interpreter process.
+    here = pickle.dumps(TOPO)
+    cmd = [
+        sys.executable,
+        "-c",
+        "import pickle, sys; from catan_ml.engine.board import TOPO; "
+        "sys.stdout.buffer.write(pickle.dumps(TOPO))",
+    ]
+    there = subprocess.check_output(cmd, timeout=30)
+    assert here == there, "topology differs across interpreter invocations"
+
+
 def test_topology_counts():
     assert TOPO.n_hexes == 19
     assert TOPO.n_vertices == 54
@@ -47,6 +123,10 @@ def test_topology_counts():
     # every edge references two distinct valid vertices
     for a, b in TOPO.edges:
         assert a != b and 0 <= a < 54 and 0 <= b < 54
+    # adjacency is symmetric
+    for v in range(TOPO.n_vertices):
+        for nb in TOPO.vertex_neighbors[v]:
+            assert v in TOPO.vertex_neighbors[nb]
 
 
 def test_fifty_games_complete_and_legal():
@@ -55,43 +135,33 @@ def test_fifty_games_complete_and_legal():
     for g in range(50):
         n_players = rng.choice((2, 3, 4))
         rows, winner = run_game(n_players, rng, game_id=g, max_turns=600,
-                                state_hook=assert_board_legal)
+                                state_hook=_both_hooks, check_conservation=True)
         assert rows, "no states logged"
-        # winner reached 10 VP (or game was capped)
         if winner != -1:
             finished += 1
-            # reconstruct final winner VP from last row
             last = rows[-1]
             assert last[f"p{winner}_total_vp"] >= 10
-    # Weak greedy bots plateau ~10% of the time (board saturates + dev deck
-    # empties -> no legal move); those games are dropped during data gen.
     assert finished >= 40, f"only {finished}/50 games finished"
 
 
-def test_no_hang_many_games():
-    """Regression: 300 games at a high turn cap must finish quickly.
+def test_conservation_fuzz():
+    """Fuzz: 1000 games with conservation invariant enabled after every action."""
+    rng = random.Random(7)
+    for g in range(1000):
+        n = rng.choice((2, 3, 4))
+        run_game(n, rng, game_id=g, max_turns=600,
+                 state_hook=assert_conservation, check_conservation=True)
 
-    Previously, unbounded road-building blew up the longest-road trail search
-    and hung for tens of minutes. Piece limits + a DFS budget bound it.
-    """
+
+def test_no_hang_many_games():
+    """Regression: 300 games at a high turn cap must finish quickly."""
     rng = random.Random(1)
     t0 = time.time()
     for g in range(300):
         n = rng.choice((2, 3, 4))
-        run_game(n, rng, game_id=g, max_turns=600)
+        run_game(n, rng, game_id=g, max_turns=600,
+                 state_hook=_both_hooks, check_conservation=True)
     elapsed = time.time() - t0
     assert elapsed < 60, f"300 games took {elapsed:.1f}s (possible hang regression)"
 
 
-def _run_all():
-    test_topology_counts()
-    print("topology OK (19 hexes / 54 vertices / 72 edges)")
-    test_fifty_games_complete_and_legal()
-    print("50-game smoke + legality OK")
-    t0 = time.time()
-    test_no_hang_many_games()
-    print(f"no-hang regression OK (300 games in {time.time() - t0:.1f}s)")
-
-
-if __name__ == "__main__":
-    _run_all()

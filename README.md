@@ -20,6 +20,9 @@ turns never leak across train/test.
 | logistic regression  | 0.414 | 0.806 | 0.872 | 0.134 |
 | **gradient boosted trees** | **0.396** | **0.816** | **0.886** | **0.128** |
 
+*These numbers are from the original full-information feature pipeline. Phase 3
+will retrain on player-perspective observations and refresh them.*
+
 - `reports/calibration.png` — both models track the diagonal closely.
 - `reports/vp_monotonicity.png` — predicted win prob rises smoothly with VP
   (0.20 at 2 VP → 0.99 at 10 VP) and matches the observed win rate at each VP.
@@ -29,22 +32,28 @@ turns never leak across train/test.
 
 ```
 catan_ml/
-  engine/     board.py (topology+layout), state.py (GameState), rules.py (legality, production, dev cards, longest road)
+  engine/     board.py (topology+layout), state.py (GameState),
+              rules.py (legality, production, dev cards, trading),
+              actions.py (Action ADT + legal_actions/apply),
+              phases.py (turn phase machine), longest_road.py (exact incremental),
+              invariant.py (card-conservation checks)
   sim/        bots.py (3 heuristic styles), simulate.py (turn loop + parquet logging)
   features/   extract.py (raw state -> numeric per-player feature rows; single source of the feature schema)
   training/   train.py (logreg + GBT, metrics, calibration), sanity.py (monotonicity + trajectory plots)
   inference/  predict.py (load model -> per-player win probs; function + CLI)
-tests/        test_engine.py (legality invariants, 50-game smoke, no-hang regression)
+tests/        test_engine.py (legality invariants, 50-game smoke, no-hang regression),
+              test_golden.py (subtle full-rules scenarios)
 ```
 
-Board topology (19 hexes / 54 vertices / 72 edges) is generated geometrically
-and cached; each game randomizes resources, number tokens, and ports.
+Board topology (19 hexes / 54 vertices / 72 edges) is generated from exact
+integer axial coordinates and cached; each game randomizes resources, number
+tokens, and ports.
 
 ## Setup
 
 ```bash
 python3 -m venv .venv
-./.venv/bin/python -m pip install -r requirements.txt
+./.venv/bin/python -m pip install -e ".[dev]"
 ```
 
 The GBT model is scikit-learn's `HistGradientBoostingClassifier` (no LightGBM,
@@ -69,7 +78,7 @@ so no `libomp`/OpenMP system dependency on macOS).
 ./.venv/bin/python -m catan_ml.inference.predict --demo --seed 3
 ```
 
-Tests: `./.venv/bin/python -m tests.test_engine`
+Tests: `./.venv/bin/python -m pytest`
 
 ## Inference
 
@@ -97,30 +106,28 @@ opponent, VP rank, VP share). Label `won` = 1 if that player eventually won.
 All are intentional (agreed in `PLAN.md`); the ones that could distort the
 signal are flagged.
 
-- **Dev cards: knights + VP cards only** (no year-of-plenty / monopoly /
-  road-building). Deck is the realistic finite `5 VP + 20 knights`, drawn
-  without replacement. **Why this matters:** an earlier version drew VP cards
-  probabilistically and over-produced them (~2.5 hidden VP per winner vs the
-  real max of 5 in the *whole* deck), which inflated hidden information and made
-  late-game states look artificially non-deterministic. With the finite deck,
-  winner VP breaks down ~53% buildings / 25% hidden dev VP / 22% longest-road +
-  largest-army — hidden dev VP is a realistic ~25% source of uncertainty, which
-  is *good*: it keeps win probability from collapsing to a trivial VP lookup.
-- **Trading: bank/port only** (4:1, 3:1, 2:1), no player-to-player trades.
-  Slightly slows resource fluidity; minor signal impact.
-- **Robber discard on 7**: players over 7 cards discard a random half. Minor.
-- **Weak bots plateau ~10% of games** (board saturates + dev deck empties → no
-  legal move). Those games are dropped (`drop_unfinished`), so labels are only
-  from games with a real winner. 3,000 attempts → ~2,686 usable games.
+- **Full Catan rules.** The engine now implements all five dev-card types with
+  the official 25-card deck (14 knights, 5 VP, 2 road-building, 2 year-of-plenty,
+  2 monopoly), a real bank of 19 cards per resource with the official shortfall
+  rule, bank/port and player-to-player trading, the standard 9-harbour port
+  layout, player-chosen discards and robber destination/victim, exact
+  incremental longest-road computation, and immediate win checks after every
+  action.
+- **The main remaining simplification is the bots.** They are greedy heuristics
+  (training-data generators, not strong opponents) and can plateau when the board
+  saturates or the dev deck empties. Those unfinished games are dropped via
+  `drop_unfinished`, so labels only come from games with a real winner.
 - **Piece limits enforced** (15 roads / 5 settlements / 4 cities). This is real
-  Catan, and it also bounds the road graph so the longest-road search stays
-  fast (an earlier unbounded version hung for tens of minutes on the exponential
-  trail search — see `tests/test_engine.py::test_no_hang_many_games`).
+  Catan, and the bounded road graph keeps the longest-road search exact and fast
+  (see `tests/test_engine.py::test_no_hang_many_games`).
+- **The training pipeline still uses full ground-truth rows.** Phase 3 will
+  replace this with an observation layer so the model only sees what a real
+  player at the table can see.
 
 ## Ideas for v2
 
-- **Full dev cards + player-to-player trading** — the two biggest realism gaps;
-  trading especially changes resource dynamics and comeback potential.
+- **Observation-based retraining** so the model only sees player-perspective
+  information and can be used in live play.
 - **Stronger / more varied bots** (e.g. lightweight lookahead or MCTS) so the
   data reflects better play and the model generalizes beyond greedy heuristics.
 - **Richer board features** — per-hex number/resource encodings or a graph

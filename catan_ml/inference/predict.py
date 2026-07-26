@@ -47,30 +47,18 @@ def _demo(model_path: str, seed: int) -> None:
     """Simulate a random game to a random point and predict from that state."""
     import random
 
-    from ..engine import rules as R
+    from ..engine.actions import active_player, apply_action
     from ..sim.bots import make_bots
-    from ..sim.simulate import _setup_phase
 
     rng = random.Random(seed)
     n = rng.choice((2, 3, 4))
     state = GameState.new_game(n, rng)
     bots = make_bots(n, rng)
-    _setup_phase(state, bots)
     stop_turn = rng.randint(20, 120)
-    turn = 0
-    while turn < stop_turn:
-        pid = state.current_player
-        state.turn_number = turn
-        roll = R.roll_dice(state)
-        if roll == 7:
-            R.handle_robber(state, pid, bots[pid].choose_robber(state, pid))
-        else:
-            R.produce(state, roll)
-        bots[pid].act(state, pid)
-        if R.check_winner(state) != -1:
-            break
-        state.current_player = (pid + 1) % n
-        turn += 1
+    while state.winner == -1 and state.turn_number < stop_turn:
+        pid = active_player(state)
+        action = bots[pid].choose_action(state, pid)
+        apply_action(state, action)
 
     bundle = load_model(model_path)
     probs = predict_from_row(bundle, state.to_row())
